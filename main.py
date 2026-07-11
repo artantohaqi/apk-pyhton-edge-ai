@@ -69,6 +69,7 @@ class FatigueApp:
         self.current_task_level = 0        
         self.calibration_hr_samples = []    
         self.has_received_first_data = False
+        self.prediction_history = []
 
         self.dashboard = None
         self.log_view = None
@@ -285,6 +286,49 @@ class FatigueApp:
         else:
             self._add_log_message("Error: Gagal menghitung baseline.")
 
+    def update_ai_prediction(self):
+        try:
+            # 1. Validasi
+            if self.ai.hr_baseline is None or self.ai.rmssd_baseline is None:
+                return
+
+            # 2. Ambil data current
+            current_hr = self.ai.last_hr
+            current_rmssd = self.ai.calculate_current_rmssd()
+            rmssd_trend = (current_rmssd / self.ai.rmssd_baseline) if self.ai.rmssd_baseline > 0 else 1.0
+            
+            # 3. Panggil AI Engine (Prediksi Instan)
+            pred = self.ai.extract_features(
+                current_hr=float(current_hr),
+                current_rmssd=float(current_rmssd),
+                task_level=float(self.current_task_level),
+                rmssd_trend=float(rmssd_trend)
+            )
+
+            # 4. Temporal Aggregation (Voting Buffer)
+            self.prediction_history.append(pred)
+            if len(self.prediction_history) > 60: # Window 60 detik
+                self.prediction_history.pop(0)
+
+            # 5. Logika Status Hybrid
+            # Digital Fatigue valid jika > 75% dari 60 detik terakhir adalah Fatigue (raw=2)
+            fatigue_votes = self.prediction_history.count(2)
+            
+            if fatigue_votes > 45: 
+                self.status = "DIGITAL FATIGUE"
+                self.trigger_mitigation() # Trigger terus menerus selama status Fatigue
+            elif pred == 1: 
+                # Stress tetap responsif instan karena sifatnya akut (tiba-tiba)
+                self.status = "STRESS"
+                self.trigger_mitigation() 
+            else:
+                self.status = "NORMAL"
+                
+            logging.info(f"[TRACE] Prediksi: {self.status} (Raw: {pred}, FatigueVotes: {fatigue_votes})")
+            
+        except Exception as e:
+            logging.error(f"Error update_ai_prediction: {e}", exc_info=True)
+
     def start_mqtt_public(self):
         try:
             client_id = f"PUB_LARAVEL_{int(time.time())}"
@@ -348,41 +392,7 @@ class FatigueApp:
                 self.data_queue.task_done()
 
     # Di dalam class FatigueApp di main.py, bagian update_ai_prediction:
-    def update_ai_prediction(self):
-        try:
-            # 1. Pastikan baseline sudah ada
-            if self.ai.hr_baseline is None or self.ai.rmssd_baseline is None:
-                return
-
-            # 2. Ambil data current dari AI Engine
-            current_hr = self.ai.last_hr
-            current_rmssd = self.ai.calculate_current_rmssd()
-            
-            # 3. Hitung Trend (Perbandingan rmssd saat ini dengan baseline)
-            # Menghindari pembagian dengan nol
-            rmssd_trend = (current_rmssd / self.ai.rmssd_baseline) if self.ai.rmssd_baseline > 0 else 1.0
-            
-            # 4. Panggil AI Engine dengan 4 ARGUMEN EKSKLUSIF
-            pred = self.ai.extract_features(
-                current_hr=float(current_hr),
-                current_rmssd=float(current_rmssd),
-                task_level=float(self.current_task_level),
-                rmssd_trend=float(rmssd_trend)
-            )
-            
-            # 5. Logika Status
-            if pred == 2:
-                self.status = "DIGITAL FATIGUE"
-                self.trigger_mitigation()
-            elif pred == 1:
-                self.status = "STRESS"
-            else:
-                self.status = "NORMAL"
-                
-            logging.info(f"[TRACE] Prediksi: {self.status} (Raw: {pred})")
-            
-        except Exception as e:
-            logging.error(f"Error update_ai_prediction: {e}", exc_info=True)
+    
 
 if __name__ == "__main__":
     ft.app(target=FatigueApp)

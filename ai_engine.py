@@ -62,8 +62,7 @@ class AIEngine:
         mean_ibi = np.mean(ibi_array)
         self.hr_baseline = 60000.0 / mean_ibi
 
-        # 4. Hitung RMSSD Baseline
-        # RMSSD = akar kuadrat dari mean(selisih kuadrat IBI yang berurutan)
+        # 4. Hitung RMSSD Baseline. RMSSD = akar kuadrat dari mean(selisih kuadrat IBI yang berurutan)
         diff_ibi = np.diff(ibi_array)
         self.rmssd_baseline = float(np.sqrt(np.mean(diff_ibi**2)))
 
@@ -105,7 +104,14 @@ class AIEngine:
                     
                     # Simpan ke buffer kalibrasi jika aktif
                     if self.is_calibrating:
-                        self.calibration_ibi_buffer.append(ibi)
+                        # Hitung HR sementara untuk validasi (60000/ibi)
+                        temp_hr = 60000.0 / ibi
+                        if 40 < temp_hr < 150:
+                            self.calibration_ibi_buffer.append(ibi)
+                            print(f"DEBUG: Data HR {temp_hr:.2f} diterima (Buffer: {len(self.calibration_ibi_buffer)})")
+                        else:
+                            # Log jika ada data dibuang
+                            logger.warning(f"Data HR {temp_hr:.2f} dibuang (Outlier).")
                         print(f"DEBUG: Puncak ditemukan! HR: {self.last_hr:.2f}, Buffer count: {len(self.calibration_ibi_buffer)}")
                 else:
                     self.last_hr = 0.0
@@ -115,35 +121,30 @@ class AIEngine:
         return float(self.last_hr), float(self.last_ibi), float(np.sqrt(ax**2 + ay**2 + az**2))
 
     def extract_features(self, current_hr, current_rmssd, task_level, rmssd_trend):
-        """
-        Model baru harus menerima Delta dan Load Index, bukan angka mentah.
-        """
         try:
             if self.hr_baseline is None or self.rmssd_baseline is None:
-                return 0.0 # Belum kalibrasi
+                return 0.0
 
-            # 1. RUMUS DELTA & LOAD INDEX (Sesuai paper)
+            # 1. RUMUS DELTA & LOAD INDEX
             delta_hr = current_hr - self.hr_baseline
             delta_rmssd = current_rmssd - self.rmssd_baseline
             load_index = task_level * rmssd_trend
             
-            # 2. Persiapkan fitur (sesuaikan dengan urutan retraining kamu nanti!)
-            # Urutan di sini harus SAMA PERSIS dengan saat kamu training di notebook
+            # 2. Persiapkan fitur (Pastikan urutan ini SAMA PERSIS dengan saat training!)
             feature_cols = ['delta_hr', 'delta_rmssd', 'task_level', 'load_index']
             
-            features_df = pd.DataFrame([[
-                float(delta_hr), float(delta_rmssd), float(task_level), float(load_index)
-            ]], columns=feature_cols)
+            # Pastikan data dalam bentuk float yang bersih
+            features_data = np.array([[float(delta_hr), float(delta_rmssd), float(task_level), float(load_index)]])
             
             # 3. Prediksi
-            scaled_features = self.scaler.transform(features_df)
+            scaled_features = self.scaler.transform(features_data)
             prediction = self.model.predict(scaled_features)
             
             return float(prediction[0])
             
         except Exception as e:
             logger.error(f"AI_ERROR: {e}")
-            return 0.0
+            return 0.0 # Default Normal jika error
 
     def calculate_current_rmssd(self):
         """Menghitung RMSSD dari buffer real-time."""

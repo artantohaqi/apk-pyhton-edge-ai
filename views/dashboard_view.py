@@ -9,17 +9,21 @@ class DashboardView(ft.Column):
         # --- KOMPONEN PANEL INTEGRASI KALIBRASI INTERNAL ---
         self.calib_countdown_text = ft.Text("03:00", size=36, weight="bold", color="blue")
         self.calib_progress_bar = ft.ProgressBar(value=0.0, width=400, color="blue")
+        
         self.calib_tutorial_text = ft.Text(
-            "Silakan duduk tegak secara santai. Jaga posisi gelang Anda.\n"
-            "Detak jantung baseline Anda sedang direkam terpisah ke tabel calibration_logs.",
-            size=13, text_align="center", color="grey"
+            "Mohon duduk tegak, rileks, dan jaga posisi.\n"
+            "Jangan berbicara atau melakukan gerakan mendadak selama 3 menit.\n"
+            "Ketenangan Anda sangat krusial untuk akurasi deteksi fatigue.",
+            size=13, 
+            text_align="center", 
+            color="blue" # Ubah warna agar lebih mencolok perhatian
         )
         
         self.calibration_panel = ft.Container(
             content=ft.Column([
                 ft.Row([
                     ft.Icon(ft.Icons.ACCESSIBILITY_NEW, color="blue"),
-                    ft.Text("PROSES KALIBRASI FISIOLOGIS AWAL (3 MENIT)", size=16, weight="bold", color="blue")
+                    ft.Text("PROSES KALIBRASI AWAL", size=16, weight="bold", color="blue")
                 ], alignment=ft.MainAxisAlignment.CENTER),
                 self.calib_tutorial_text,
                 ft.Row([self.calib_countdown_text], alignment=ft.MainAxisAlignment.CENTER),
