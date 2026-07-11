@@ -15,8 +15,13 @@ def start_mqtt(callback_data, callback_log):
     # 1. Pastikan Client ID unik agar tidak ditolak broker
     client_id = f"EDUSTRESS_BAND_{random.randint(1000, 9999)}"
     
-    # 2. Inisialisasi Paho MQTT
-    mqtt_client = mqtt.Client(client_id)
+    # 2. Inisialisasi Paho MQTT dengan kompatibilitas API
+    try:
+        # Versi terbaru paho-mqtt memerlukan CallbackAPIVersion
+        mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id)
+    except AttributeError:
+        # Fallback jika kamu menggunakan versi Paho MQTT yang lebih lama
+        mqtt_client = mqtt.Client(client_id)
     
     def on_connect(client, userdata, flags, rc):
         if rc == 0:
@@ -27,6 +32,7 @@ def start_mqtt(callback_data, callback_log):
 
     def on_message(client, userdata, msg):
         try:
+            print(f"DEBUG: Menerima paket MQTT! Ukuran: {len(msg.payload)} bytes")
             # 3. Decode pesan dari ESP32
             payload = msg.payload.decode()
             data = json.loads(payload)

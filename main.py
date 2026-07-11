@@ -5,6 +5,8 @@ import json
 import numpy as np
 from datetime import datetime
 import paho.mqtt.client as mqtt
+import wifi_logic
+import traceback
 
 from database import DBManager
 from ai_engine import AIEngine
@@ -121,89 +123,152 @@ class FatigueApp:
         self.page.update()
 
     def on_connect_click(self, e):
-        if not self.active_user: return
+        self._add_log_message("Menyalakan mesin MQTT otomatis...")
+        
+        # 1. Validasi user
+        if not self.active_user: 
+            self._add_log_message("Error: User tidak ditemukan!")
+            return
+
+        # 2. Reset Status (State Machine)
         self.is_calibrating = True
+        self.ai.is_calibrating = True
         self.is_calibrated = False
         self.calibration_seconds = 180
         self.calibration_hr_samples = []
         self.has_received_first_data = False
         
         logging.info("Menunggu aliran data dari Gelang IoT...")
-        threading.Thread(target=self.start_mqtt_local, daemon=True).start()
-        threading.Thread(target=self.start_mqtt_public, daemon=True).start()
+
+        # 3. Menjalankan MQTT Gateway satu-satunya
+        # Kita menggunakan lambda agar bisa mengirim argumen ke wifi_logic.start_mqtt
+        threading.Thread(
+            target=lambda: wifi_logic.start_mqtt(self.on_local_message, self._add_log_message), 
+            daemon=True
+        ).start()
 
     def on_local_message(self, data):
         try:
-            # 1. Parsing Data (Di-parse di wifi_logic.py)
-            ppg_ir = int(data.get("ir", 0))
-            red_val = int(data.get("red", 0))
-            ax = float(data.get("ax", 0))
-            ay = float(data.get("ay", 0))
-            az = float(data.get("az", 0))
+            batch_list = data.get('data', [])
             
-            if ppg_ir == 0: return
-
-            # 2. SIMPAN KE DATABASE RAW SENSOR (Wajib untuk visualisasi)
-            if self.db:
-                self.db.add_raw_sensor_log(self.active_user['id'], ppg_ir, red_val, ax, ay, az, 0, 0, 0)
-
-            # 3. TRIGGER TIMER PERTAMA KALI
-            # Ini adalah "Pintu Otomatis". Jika ini pertama kali data datang, aktifkan kalibrasi.
-            if not getattr(self, 'has_received_first_data', False):
-                self.has_received_first_data = True
-                self.is_calibrating = True # Aktifkan status kalibrasi
-                threading.Thread(target=self.start_calibration_timer, daemon=True).start()
-
-            # 4. DISPATCHER (Penyalur Data)
-            # on_local_message tidak melakukan proses AI, dia hanya melempar data sesuai status
-            if self.is_calibrating:
-                # Panggil fungsi khusus untuk menyimpan sample kalibrasi
-                self.process_calibration_data(ppg_ir, ax, ay, az)
+            for item in batch_list:
+                ppg_ir = int(item.get("ir", 0))
+                red_val = int(item.get("red", 0))
+                ax = float(item.get("ax", 0))
+                ay = float(item.get("ay", 0))
+                az = float(item.get("az", 0))
                 
-            elif self.is_calibrated:
-                # Panggil fungsi khusus untuk prediksi AI
-                self.run_ai_prediction(ppg_ir, ax, ay, az)
+                if ppg_ir == 0: continue
+
+                # 1. LOG RAW SENSOR (Wajib untuk visualisasi)
+                # OPTIMASI: Jangan log setiap 16ms (60Hz) jika database keberatan.
+                # Jika terasa lambat, kamu bisa log hanya setiap sampel ke-5 atau ke-10.
+                if self.db:
+                    self.db.add_raw_sensor_log(self.active_user['id'], ppg_ir, red_val, ax, ay, az, 0, 0, 0)
+
+                # 2. TRIGGER TIMER PERTAMA (Hanya jalan sekali)
+                if not getattr(self, 'has_received_first_data', False):
+                    self.has_received_first_data = True
+                    # Pastikan status diinisialisasi
+                    self.is_calibrating = True
+                    self.is_calibrated = False
+                    self.calibration_seconds = 180
+                    threading.Thread(target=self.start_calibration_timer, daemon=True).start()
+
+                # 3. PROSES DSP (Menghitung HR, IBI, Acc)
+                hr, ibi, acc = self.ai.process_raw_signals(ppg_ir, ax, ay, az)
+
+                # 4. DISPATCHER
+                if self.is_calibrating:
+                    if 40 < hr < 180:
+                        self.record_calibration_sample(hr, ax, ay, az)
+                    
+                elif self.is_calibrated:
+                    # Pastikan update_ai_prediction() sudah menangani logika database kesehatan
+                    self.update_ai_prediction()
 
         except Exception as e: 
             print(f"Error pada on_local_message: {e}")
 
     def start_calibration_timer(self):
-        logging.info("Data masuk! Memulai countdown kalibrasi...")
-        while getattr(self, 'is_calibrating', False) and not getattr(self, 'is_calibrated', False):
-            if self.calibration_seconds > 0:
+        logging.info("Memulai countdown kalibrasi...")
+        
+        # 1. Inisialisasi State yang Aman
+        self.calibration_seconds = 180
+        self.is_calibrating = True
+        self.is_calibrated = False
+        
+        try:
+            # 2. Loop Utama dengan monitoring state
+            while self.is_calibrating and self.calibration_seconds > 0:
+                time.sleep(1) # Interval 1 detik
                 self.calibration_seconds -= 1
+                
+                # Update UI dengan proteksi
                 if self.dashboard:
                     self.dashboard.update_calibration_ui(self.calibration_seconds, total_seconds=180)
-                self.page.update()
-                time.sleep(1)
-            else:
-                self.is_calibrated = True
-                self.is_calibrating = False
-                self.finalize_calibration()
-                self._add_log_message("Kalibrasi Selesai! Mengunci Baseline.")
-                if self.dashboard and self.dashboard.status_ref.current:
-                    self.dashboard.status_ref.current.value = "NORMAL"
-                    self.dashboard.status_ref.current.color = "green"
-                self.page.update()
-                break
+                    self.page.update()
+                
+                logging.debug(f"Sisa waktu kalibrasi: {self.calibration_seconds} detik")
 
-    def record_calibration_sample(self, hr):
-        # 1. Simpan ke list (untuk nanti dihitung baseline-nya)
+            # 3. Kondisi Selesai Normal
+            if self.calibration_seconds <= 0:
+                logging.info("Waktu kalibrasi habis, memanggil finalize...")
+                self.finalize_calibration()
+                
+        except Exception as e:
+            logging.error(f"Timer crash: {e}", exc_info=True)
+            self._add_log_message("Error: Kalibrasi terhenti mendadak.")
+            self.is_calibrating = False
+        
+        finally:
+            # 4. Pastikan UI selalu update status terakhir
+            if self.dashboard and self.dashboard.status_ref.current:
+                status_color = "green" if self.is_calibrated else "red"
+                status_text = "NORMAL" if self.is_calibrated else "FAILED"
+                self.dashboard.status_ref.current.value = status_text
+                self.dashboard.status_ref.current.color = status_color
+            self.page.update()
+
+    def record_calibration_sample(self, hr, ax, ay, az):
+        # 1. Hitung magnitudo akselerasi (Vector Sum)
+        acc_magnitude = (ax**2 + ay**2 + az**2)**0.5
+        
+        # Threshold gerakan (Sesuaikan nilainya sesuai sensitivitas sensor MPU6050)
+        # Jika acc_magnitude terlalu tinggi, berarti user bergerak -> data kotor
+        MOVEMENT_THRESHOLD = 15000 
+        
+        if acc_magnitude > MOVEMENT_THRESHOLD:
+            # Data kotor, abaikan sample ini agar baseline tidak terkontaminasi
+            self._add_log_message("Gerakan terdeteksi! Mengabaikan sample...")
+            return 
+
+        # 2. Jika bersih, baru simpan ke list
         self.calibration_hr_samples.append(hr)
         
-        # 2. Simpan log mentah per detik (hanya jika butuh untuk visualisasi/debugging)
+        # 3. Simpan log (Opsional)
         if self.db:
             self.db.add_calibration_log(self.active_user['id'], hr, hr * 0.45)
         
-        # 3. Update UI
-        self._update_health_ui(int(hr), calibrating=True)
+        # 4. Update UI
+        try: self._update_health_ui(int(hr), calibrating=True)
+        except: pass
 
     def finalize_calibration(self):
-        # 1. Panggil engine untuk menghitung rata-rata (baseline) dari sample yang terkumpul
-        # Kamu bisa menambahkan list samples ke ai_engine jika perlu
-        if self.ai.calculate_baseline_from_samples(self.calibration_hr_samples):
+
+        # Kita cetak siapa yang memanggil fungsi ini
+        print("--- [DEBUG] finalize_calibration dipanggil oleh: ---")
+        traceback.print_stack() 
+        print("------------------------------------------------------")
+        
+        # Jangan biarkan lanjut jika waktu belum habis (di bawah 175 detik sebagai toleransi)
+        if self.calibration_seconds > 5: 
+            logging.warning(f"Finalisasi ditolak! Detik tersisa masih: {self.calibration_seconds}")
+            return
+    
+        if self.ai.calculate_baseline():
             
-            # 2. Simpan ke Tabel HASIL FINAL (calibration_results)
+            # 2. Simpan ke Tabel 
             success = self.db.save_calibration_result(
                 user_id=self.active_user['id'], 
                 hr_baseline=float(self.ai.hr_baseline),
@@ -214,8 +279,8 @@ class FatigueApp:
                 print("DEBUG: Final Baseline tersimpan ke database!")
             
             # 3. Ubah Status
-            self.is_calibrated = True
             self.is_calibrating = False
+            self.is_calibrated = True
             self._add_log_message("Kalibrasi Selesai! Baseline Terkunci.")
         else:
             self._add_log_message("Error: Gagal menghitung baseline.")

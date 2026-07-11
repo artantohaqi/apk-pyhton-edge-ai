@@ -13,6 +13,8 @@ class AIEngine:
         base_path = os.path.dirname(os.path.abspath(__file__))
         model_path = os.path.join(base_path, "models", model_name)
         scaler_path = os.path.join(base_path, "models", scaler_name)
+        self.sample_counter = 0
+        self.sample_index_buffer = []
         
         try:
             self.model = joblib.load(model_path)
@@ -41,69 +43,76 @@ class AIEngine:
         logger.info("Sesi Kalibrasi dimulai (3 menit).")
 
     def calculate_baseline(self):
-        """Mengolah 3 menit data IBI menjadi nilai Baseline tetap."""
+        """Mengolah data IBI yang dikumpulkan menjadi nilai Baseline tetap."""
+
+        # TAMBAHKAN DEBUG INI:
+        print(f"DEBUG: Isi buffer kalibrasi saat ini: {len(self.calibration_ibi_buffer)} sampel")
+
+        # 1. Validasi: Pastikan data cukup (misalnya minimal 50 detak)
         if len(self.calibration_ibi_buffer) < 50:
             logger.warning("Data kalibrasi tidak cukup!")
             return False
-            
-        # Hitung HR Baseline
-        self.hr_baseline = 60000.0 / np.mean(self.calibration_ibi_buffer)
-        
-        # Hitung RMSSD Baseline
-        diff_ibi = np.diff(self.calibration_ibi_buffer)
-        self.rmssd_baseline = np.sqrt(np.mean(diff_ibi**2))
-        
-        self.is_calibrating = False
-        logger.info(f"Kalibrasi Selesai! Baseline: HR={self.hr_baseline:.2f}, RMSSD={self.rmssd_baseline:.2f}")
+
+        # 2. Convert buffer ke numpy array untuk perhitungan cepat
+        ibi_array = np.array(self.calibration_ibi_buffer)
+
+        # 3. Hitung HR Baseline (Mean HR)
+        # Rata-rata IBI = Mean(ibi_array)
+        # HR = 60000 / Mean(IBI)
+        mean_ibi = np.mean(ibi_array)
+        self.hr_baseline = 60000.0 / mean_ibi
+
+        # 4. Hitung RMSSD Baseline
+        # RMSSD = akar kuadrat dari mean(selisih kuadrat IBI yang berurutan)
+        diff_ibi = np.diff(ibi_array)
+        self.rmssd_baseline = float(np.sqrt(np.mean(diff_ibi**2)))
+
+        logger.info(f"Kalibrasi Berhasil! HR_Baseline: {self.hr_baseline}, RMSSD_Baseline: {self.rmssd_baseline}")
         return True
 
     def process_raw_signals(self, ppg_ir, ax, ay, az):
-        """DSP Engine: Mencari detak jantung & mengisi buffer."""
-        
-        # 1. Kalkulasi MPU6050 (Hitung sekali di awal)
-        calculated_acc = np.sqrt(ax**2 + ay**2 + az**2)
-        
-        # Simpan sebagai class attribute agar aman diakses
-        self.last_acc = calculated_acc 
-        
-        # 2. Masukkan data IR ke memori sementara (Buffer)
-        current_time = time.time()
+        self.sample_counter += 1
         self.ir_buffer.append(ppg_ir)
-        self.time_buffer.append(current_time)
-
-        if len(self.ir_buffer) > 100:
+        self.sample_index_buffer.append(self.sample_counter)
+        
+        if len(self.ir_buffer) > 150: # Window size 150 untuk kestabilan
             self.ir_buffer.pop(0)
-            self.time_buffer.pop(0)
+            self.sample_index_buffer.pop(0)
 
-        # 3. DSP ENGINE: Mencari Detak Jantung
-        # Hanya jalan jika data cukup
-        if len(self.ir_buffer) >= 50:
-            ir_detrended = np.array(self.ir_buffer) - np.mean(self.ir_buffer)
-            # Hitung peaks
-            peaks, _ = find_peaks(ir_detrended, distance=10, prominence=np.std(ir_detrended)*0.5)
+        if len(self.ir_buffer) >= 100:
+            # --- TEKNIK SMOOTHING (Moving Average) ---
+            # Menggunakan rolling average untuk menghilangkan noise frekuensi tinggi
+            data_series = pd.Series(self.ir_buffer)
+            ir_smooth = data_series.rolling(window=10).mean().fillna(0).values
+            
+            # Detrending
+            ir_detrended = ir_smooth - np.mean(ir_smooth)
+            
+            # --- DETEKSI PUNCAK YANG LEBIH CERDAS ---
+            # prominence dinaikkan agar hanya puncak yang "menonjol" yang dihitung
+            peaks, _ = find_peaks(ir_detrended, distance=30, prominence=np.std(ir_detrended)*0.8)
 
             if len(peaks) >= 2:
-                t1 = self.time_buffer[peaks[-2]]
-                t2 = self.time_buffer[peaks[-1]]
-                ibi = (t2 - t1) * 1000.0
+                # Ambil 2 puncak terakhir
+                idx1 = self.sample_index_buffer[peaks[-2]]
+                idx2 = self.sample_index_buffer[peaks[-1]]
+                
+                ibi = (idx2 - idx1) * 16.67 
 
-                # Validasi medis
                 if 400 < ibi < 1500:
                     self.last_ibi = ibi
                     self.last_hr = 60000.0 / ibi
                     
-                    # Jika kalibrasi aktif, simpan data ke buffer baseline
+                    # Simpan ke buffer kalibrasi jika aktif
                     if self.is_calibrating:
                         self.calibration_ibi_buffer.append(ibi)
+                        print(f"DEBUG: Puncak ditemukan! HR: {self.last_hr:.2f}, Buffer count: {len(self.calibration_ibi_buffer)}")
+                else:
+                    self.last_hr = 0.0
+            else:
+                self.last_hr = 0.0
 
-        # 4. Update Buffer Fitur AI (Rolling window 60 detik)
-        self.ibi_buffer.append(self.last_ibi)
-        if len(self.ibi_buffer) > 60: 
-            self.ibi_buffer.pop(0)
-        
-        # 5. RETURN PASTI (3 NILAI)
-        # Fungsi ini sekarang dijamin mengembalikan 3 nilai: HR, IBI, dan Acc
-        return float(self.last_hr), float(self.last_ibi), float(calculated_acc)
+        return float(self.last_hr), float(self.last_ibi), float(np.sqrt(ax**2 + ay**2 + az**2))
 
     def extract_features(self, current_hr, current_rmssd, task_level, rmssd_trend):
         """
