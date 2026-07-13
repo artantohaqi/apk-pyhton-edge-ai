@@ -89,8 +89,11 @@ class AIEngine:
             
             # --- DETEKSI PUNCAK YANG LEBIH CERDAS ---
             # prominence dinaikkan agar hanya puncak yang "menonjol" yang dihitung
-            peaks, _ = find_peaks(ir_detrended, distance=30, prominence=np.std(ir_detrended)*0.8)
+            # peaks, _ = find_peaks(ir_detrended, distance=30, prominence=np.std(ir_detrended)*0.8)
+            peaks, _ = find_peaks(ir_detrended, distance=30)
 
+            print(f"DEBUG DSP: Buffer={len(self.ir_buffer)} | Jumlah Puncak={len(peaks)} | Std={np.std(ir_detrended):.2f}") 
+            
             if len(peaks) >= 2:
                 # Ambil 2 puncak terakhir
                 idx1 = self.sample_index_buffer[peaks[-2]]
@@ -120,32 +123,59 @@ class AIEngine:
 
         return float(self.last_hr), float(self.last_ibi), float(np.sqrt(ax**2 + ay**2 + az**2))
 
-    def extract_features(self, current_hr, current_rmssd, task_level, rmssd_trend):
+    def extract_features(self, current_hr, current_rmssd, ax, ay, az):
         try:
             if self.hr_baseline is None or self.rmssd_baseline is None:
-                return 0.0
+                return None
 
-            # 1. RUMUS DELTA & LOAD INDEX
+            # 1. Gating/Filtering berdasarkan Motion
+            motion_level, magnitude = self.get_motion_level(ax, ay, az)
+            
+            if motion_level == 2:
+                logger.info(f"Data Rejected: High Motion Detected (Mag: {magnitude:.2f})")
+                return None # Mengembalikan None jika data terlalu berisik
+
+            # 2. RUMUS DELTA
             delta_hr = current_hr - self.hr_baseline
             delta_rmssd = current_rmssd - self.rmssd_baseline
-            load_index = task_level * rmssd_trend
             
-            # 2. Persiapkan fitur (Pastikan urutan ini SAMA PERSIS dengan saat training!)
-            feature_cols = ['delta_hr', 'delta_rmssd', 'task_level', 'load_index']
+            # 3. Persiapkan fitur (hanya delta_hr, delta_rmssd, motion_level)
+            features_data = np.array([[float(delta_hr), float(delta_rmssd), float(motion_level)]])
             
-            # Pastikan data dalam bentuk float yang bersih
-            features_data = np.array([[float(delta_hr), float(delta_rmssd), float(task_level), float(load_index)]])
-            
-            # 3. Prediksi
-            scaled_features = self.scaler.transform(features_data)
-            prediction = self.model.predict(scaled_features)
-            
-            return float(prediction[0])
+            # Kembalikan data yang sudah di-gating untuk dikirim ke sistem/database
+            return {
+                "delta_hr": float(delta_hr),
+                "delta_rmssd": float(delta_rmssd),
+                "motion_level": motion_level
+            }
             
         except Exception as e:
             logger.error(f"AI_ERROR: {e}")
-            return 0.0 # Default Normal jika error
+            return None
 
+    def get_motion_level(self, ax, ay, az):
+        """
+        Menentukan level gerakan berdasarkan magnitude akselerometer.
+        Asumsi MPU6050: 1g = ~16384.
+        """
+        # Hitung magnitude vektor
+        magnitude = np.sqrt(ax**2 + ay**2 + az**2)
+        
+        # Hitung deviasi dari gaya gravitasi bumi (1g = 16384)
+        # Jika nilai magnitude terlalu jauh dari 16384, artinya ada gerakan/guncangan
+        deviation = abs(magnitude - 16384)
+        
+        # Threshold:
+        # 0-3000: Diam/Sangat tenang (Data bersih)
+        # 3000-8000: Gerakan ringan (Acceptable)
+        # >8000: Gerakan tinggi (Reject)
+        if deviation < 3000:
+            return 0, magnitude
+        elif deviation < 8000:
+            return 1, magnitude
+        else:
+            return 2, magnitude
+        
     def calculate_current_rmssd(self):
         """Menghitung RMSSD dari buffer real-time."""
         if len(self.ibi_buffer) < 2: return 30.0

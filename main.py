@@ -1,3 +1,5 @@
+from collections import deque
+
 import flet as ft
 import threading
 import time
@@ -75,9 +77,19 @@ class FatigueApp:
         self.log_view = None
         self.screentime_view = None
         
+        self.last_ax = 0.0
+        self.last_ay = 0.0
+        self.last_az = 0.0
+
         self.page.clean()
         self.page.add(AuthView(self.db, self.on_login_success))
         self.is_task_active = False
+
+        self.prediction_buffer = [] # Penampung 10 prediksi terakhir
+        self.window_history = deque(maxlen=3) 
+        self.current_window_features = [] # Penampung data per 60 detik
+        self.last_window_time = time.time()
+        self.WINDOW_SIZE = 10
 
         for handler in logging.getLogger().handlers:
             handler.flush()
@@ -158,6 +170,10 @@ class FatigueApp:
                 ax = float(item.get("ax", 0))
                 ay = float(item.get("ay", 0))
                 az = float(item.get("az", 0))
+
+                self.last_ax = ax
+                self.last_ay = ay
+                self.last_az = az
                 
                 if ppg_ir == 0: continue
 
@@ -234,26 +250,27 @@ class FatigueApp:
     def record_calibration_sample(self, hr, ax, ay, az):
         # 1. Hitung magnitudo akselerasi (Vector Sum)
         acc_magnitude = (ax**2 + ay**2 + az**2)**0.5
-        
+
         # Threshold gerakan (Sesuaikan nilainya sesuai sensitivitas sensor MPU6050)
         # Jika acc_magnitude terlalu tinggi, berarti user bergerak -> data kotor
-        MOVEMENT_THRESHOLD = 15000 
-        
+        MOVEMENT_THRESHOLD = 22000
+
         if acc_magnitude > MOVEMENT_THRESHOLD:
             # Data kotor, abaikan sample ini agar baseline tidak terkontaminasi
             self._add_log_message("Gerakan terdeteksi! Mengabaikan sample...")
-            return 
+            return
 
         # 2. Jika bersih, baru simpan ke list
         self.calibration_hr_samples.append(hr)
-        
+
         # 3. Simpan log (Opsional)
         if self.db:
             self.db.add_calibration_log(self.active_user['id'], hr, hr * 0.45)
-        
+
         # 4. Update UI
         try: self._update_health_ui(int(hr), calibrating=True)
-        except: pass
+        except: pass 
+
 
     def finalize_calibration(self):
 
@@ -288,46 +305,77 @@ class FatigueApp:
 
     def update_ai_prediction(self):
         try:
-            # 1. Validasi
             if self.ai.hr_baseline is None or self.ai.rmssd_baseline is None:
                 return
 
-            # 2. Ambil data current
-            current_hr = self.ai.last_hr
-            current_rmssd = self.ai.calculate_current_rmssd()
-            rmssd_trend = (current_rmssd / self.ai.rmssd_baseline) if self.ai.rmssd_baseline > 0 else 1.0
-            
-            # 3. Panggil AI Engine (Prediksi Instan)
-            pred = self.ai.extract_features(
-                current_hr=float(current_hr),
-                current_rmssd=float(current_rmssd),
-                task_level=float(self.current_task_level),
-                rmssd_trend=float(rmssd_trend)
+            processed_data = self.ai.extract_features(
+                current_hr=float(self.ai.last_hr),
+                current_rmssd=float(self.ai.calculate_current_rmssd()),
+                ax=float(self.last_ax),
+                ay=float(self.last_ay),
+                az=float(self.last_az)
             )
 
-            # 4. Temporal Aggregation (Voting Buffer)
-            self.prediction_history.append(pred)
-            if len(self.prediction_history) > 60: # Window 60 detik
-                self.prediction_history.pop(0)
+            if processed_data:
+                # 1. Simpan ke database setiap detak (untuk log detail)
+                self.db.add_health_metrics(
+                    user_id=self.active_user['id'],
+                    hr=float(self.ai.last_hr),
+                    rmssd=float(self.ai.calculate_current_rmssd()),
+                    delta_hr=processed_data['delta_hr'],
+                    delta_rmssd=processed_data['delta_rmssd'],
+                    motion_level=processed_data['motion_level']
+                )
 
-            # 5. Logika Status Hybrid
-            # Digital Fatigue valid jika > 75% dari 60 detik terakhir adalah Fatigue (raw=2)
-            fatigue_votes = self.prediction_history.count(2)
-            
-            if fatigue_votes > 45: 
-                self.status = "DIGITAL FATIGUE"
-                self.trigger_mitigation() # Trigger terus menerus selama status Fatigue
-            elif pred == 1: 
-                # Stress tetap responsif instan karena sifatnya akut (tiba-tiba)
-                self.status = "STRESS"
-                self.trigger_mitigation() 
+                # 2. Akumulasi ke buffer window
+                self.current_window_features.append(processed_data)
+
+                # 3. Cek apakah sudah 60 detik?
+                if time.time() - self.last_window_time >= 60:
+                    self.process_60s_window()
+                    self.last_window_time = time.time()
             else:
-                self.status = "NORMAL"
-                
-            logging.info(f"[TRACE] Prediksi: {self.status} (Raw: {pred}, FatigueVotes: {fatigue_votes})")
-            
+                logging.info("[REJECTED] Data ignored due to high motion")
+
         except Exception as e:
             logging.error(f"Error update_ai_prediction: {e}", exc_info=True)
+
+    def process_60s_window(self):
+        if not self.current_window_features: return
+
+        avg_delta_hr = np.mean([d['delta_hr'] for d in self.current_window_features])
+        avg_delta_rmssd = np.mean([d['delta_rmssd'] for d in self.current_window_features])
+        
+        # Simpan ke tabel window_slicing_logs
+        window_id = self.db.insert_window_log(self.active_user['id'], avg_delta_hr, avg_delta_rmssd)
+        
+        snapshot = {
+            "id": window_id, # Simpan ID agar bisa di-link
+            "delta_hr": avg_delta_hr,
+            "delta_rmssd": avg_delta_rmssd
+        }
+        self.window_history.append(snapshot)
+        self.current_window_features = []
+        
+        if len(self.window_history) == 3:
+            self.analyze_fatigue_trend()
+
+    def analyze_fatigue_trend(self):
+        w1, w2, w3 = self.window_history[0], self.window_history[1], self.window_history[2]
+        
+        # Logika Trend
+        hr_naik = (w3['delta_hr'] > w2['delta_hr'] > w1['delta_hr'])
+        rmssd_turun = (w3['delta_rmssd'] < w2['delta_rmssd'] < w1['delta_rmssd'])
+        
+        # Skor sederhana (bisa kamu modifikasi untuk skripsi)
+        trend_score = float(w3['delta_hr'] - w1['delta_hr']) 
+        
+        self.status = "DIGITAL FATIGUE" if (hr_naik and rmssd_turun) else "NORMAL"
+        
+        # Simpan hasil prediksi ke tabel prediction_logs
+        self.db.insert_prediction_log(w3['id'], self.status, trend_score)
+        
+        logging.info(f"[DB LOGGED] Status: {self.status}")
 
     def start_mqtt_public(self):
         try:
@@ -339,11 +387,25 @@ class FatigueApp:
                 
             self.mqtt_public.on_message = self.on_public_message
             self.mqtt_public.on_connect = lambda c, u, f, rc, p=None: self._add_log_message("Terhubung ke Public Broker (Laravel ready)!")
-            self.mqtt_public.connect("broker.hivemq.com", 1883, 60)
             self.mqtt_public.subscribe("polines/fatigue/web")
             self.mqtt_public.loop_start()
         except Exception as e:
             print(f"Public MQTT Error: {e}")
+
+    def prepare_full_features(self, data):
+        logging.info(f"DEBUG: active_user keys = {list(self.active_user.keys())}")
+        profile = self.active_user 
+        gender_val = 1 if profile.get('kelamin_id') == 1 else 0
+        return np.array([[
+            data['delta_hr'], 
+            data['delta_rmssd'], 
+            0.0, # mean_acc
+            0.0, 0.0, 0.0, 0.0, # lag values
+            profile.get('age', 0),       # Pakai 'age'
+            profile.get('tb', 0),       # Pakai 'tb' (Tinggi Badan)
+            profile.get('bb', 0),        # Pakai 'bb' (Berat Badan)
+            gender_val                    # Hasil mapping 'kelamin_id'
+        ]])
 
     def on_public_message(self, client, userdata, msg):
         try:
@@ -358,14 +420,20 @@ class FatigueApp:
                 self.page.update()
         except: pass
 
-    def _update_health_ui(self, hr_val, calibrating=False):
+    def _update_health_ui(self, hr_val):
+        # Akses dashboard melalui instance yang benar
         if self.dashboard and self.dashboard.hr_ref.current:
             self.dashboard.hr_ref.current.value = f"{hr_val} BPM"
-            if not calibrating and self.dashboard.status_ref.current:
-                self.dashboard.status_ref.current.value = self.status
-                if self.status == "DIGITAL FATIGUE": self.dashboard.status_ref.current.color = "red"
-                elif self.status == "STRESS": self.dashboard.status_ref.current.color = "orange"
-                else: self.dashboard.status_ref.current.color = "green"
+            
+            if self.dashboard.status_ref.current:
+                self.dashboard.status_ref.current.value = self.status # self.status dari Trend Analysis
+                
+                # Ubah warna berdasarkan status
+                if self.status == "DIGITAL FATIGUE":
+                    self.dashboard.status_ref.current.color = "red"
+                else:
+                    self.dashboard.status_ref.current.color = "green"
+            
             self.page.update()
 
     def _add_log_message(self, message):

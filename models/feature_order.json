@@ -1,13 +1,13 @@
 [
-  "hr",
-  "acc_x",
-  "acc_y",
-  "acc_z",
-  "rmssd",
-  "rmssd_trend",
-  "cumulative_demand",
+  "delta_hr",
+  "delta_rmssd",
+  "mean_acc",
+  "lag1_hr",
+  "lag1_rmssd",
+  "lag2_hr",
+  "lag2_rmssd",
   "Age",
   "Height (cm)",
   "Weight (kg)",
-  "Gender"
+  "Gender_m"
 ]

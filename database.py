@@ -83,8 +83,7 @@ class DBManager:
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS health_metrics_logs (
                         id INT AUTO_INCREMENT PRIMARY KEY, user_id INT,
-                        hr FLOAT, ibi FLOAT, acc FLOAT, delta_hr FLOAT, delta_rmssd FLOAT,
-                        status_ai VARCHAR(50), recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        hr FLOAT, rmssd FLOAT, delta_hr FLOAT, delta_rmssd FLOAT, motion_level INT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 cursor.execute("""
@@ -181,26 +180,26 @@ class DBManager:
     # ========================================================
     # FIX FATAL 2: FUNGSI KEMBAR DIHAPUS, SISA 1 YANG BENAR
     # ========================================================
-    def add_health_metrics_log(self, user_id, hr, ibi, acc, delta_hr, delta_rmssd, status_ai):
-        if not self.is_connected or user_id is None: return False
+    # Di dalam database.py
+    def add_health_metrics(self, user_id, hr, rmssd, delta_hr, delta_rmssd, motion_level):
+        # Sesuaikan dengan nama kolom di tabel health_metrics_logs kamu
+        query = """INSERT INTO health_metrics_logs 
+                (user_id, hr, rmssd, delta_hr, delta_rmssd, motion_level, timestamp) 
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())"""
+        
         conn = None
-        cursor = None
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-            query = """
-                INSERT INTO health_metrics_logs (user_id, hr, ibi, acc, delta_hr, delta_rmssd, status_ai) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """
-            cursor.execute(query, (user_id, float(hr), float(ibi), float(acc), float(delta_hr), float(delta_rmssd), status_ai))
-            conn.commit()
-            return True
+            with self.lock:
+                cursor.execute(query, (user_id, hr, rmssd, delta_hr, delta_rmssd, motion_level))
+                conn.commit()
+            cursor.close()
         except Exception as e:
-            logger.error(" Error insert health metrics log: %s", str(e))
-            return False
+            logger.error(f"Gagal simpan ke health_metrics_logs: {e}")
         finally:
-            if cursor: cursor.close()
-            if conn: conn.close()
+            if conn:
+                conn.close()
 
     # ========================================================
     # FIX FATAL 3: PENYESUAIAN NAMA KOLOM (recorded_at & status_ai)
@@ -346,3 +345,25 @@ class DBManager:
             return []
         finally:
             if conn: conn.close()
+
+    def insert_window_log(self, user_id, avg_hr, avg_rmssd):
+        query = "INSERT INTO window_slicing_logs (user_id, start_time, end_time, avg_delta_hr, avg_delta_rmssd) VALUES (%s, NOW(), NOW(), %s, %s)"
+        with self.lock:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(query, (user_id, avg_hr, avg_rmssd))
+            window_id = cursor.lastrowid # Ambil ID terakhir untuk link ke prediction_logs
+            conn.commit()
+            cursor.close()
+            conn.close()
+            return window_id
+
+    def insert_prediction_log(self, window_id, status, trend_score):
+        query = "INSERT INTO prediction_logs (window_id, prediction_status, trend_score) VALUES (%s, %s, %s)"
+        with self.lock:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute(query, (window_id, status, trend_score))
+            conn.commit()
+            cursor.close()
+            conn.close()
