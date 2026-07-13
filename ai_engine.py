@@ -24,11 +24,11 @@ class AIEngine:
             self.status_msg = f"AI Error: {str(e)}"
             
         # --- BUFFER REAL-TIME (Untuk Smoothing/DSP) ---
-        self.ibi_buffer = [800.0] * 30  
+        self.ibi_buffer = []  
         self.ir_buffer = []
         self.time_buffer = []
         self.last_hr = 75.0
-        self.last_ibi = 800.0
+        self.last_ibi = 0.0
 
         # --- BUFFER & VARIABEL BASELINE (KALIBRASI 3 MENIT) ---
         self.is_calibrating = False
@@ -74,48 +74,35 @@ class AIEngine:
         self.ir_buffer.append(ppg_ir)
         self.sample_index_buffer.append(self.sample_counter)
         
-        if len(self.ir_buffer) > 150: # Window size 150 untuk kestabilan
+        if len(self.ir_buffer) > 150:
             self.ir_buffer.pop(0)
             self.sample_index_buffer.pop(0)
 
         if len(self.ir_buffer) >= 100:
-            # --- TEKNIK SMOOTHING (Moving Average) ---
-            # Menggunakan rolling average untuk menghilangkan noise frekuensi tinggi
             data_series = pd.Series(self.ir_buffer)
             ir_smooth = data_series.rolling(window=10).mean().fillna(0).values
-            
-            # Detrending
             ir_detrended = ir_smooth - np.mean(ir_smooth)
             
-            # --- DETEKSI PUNCAK YANG LEBIH CERDAS ---
-            # prominence dinaikkan agar hanya puncak yang "menonjol" yang dihitung
-            # peaks, _ = find_peaks(ir_detrended, distance=30, prominence=np.std(ir_detrended)*0.8)
             peaks, _ = find_peaks(ir_detrended, distance=30)
-
-            print(f"DEBUG DSP: Buffer={len(self.ir_buffer)} | Jumlah Puncak={len(peaks)} | Std={np.std(ir_detrended):.2f}") 
             
             if len(peaks) >= 2:
-                # Ambil 2 puncak terakhir
                 idx1 = self.sample_index_buffer[peaks[-2]]
                 idx2 = self.sample_index_buffer[peaks[-1]]
-                
                 ibi = (idx2 - idx1) * 16.67 
 
                 if 400 < ibi < 1500:
                     self.last_ibi = ibi
                     self.last_hr = 60000.0 / ibi
                     
-                    # Simpan ke buffer kalibrasi jika aktif
+                    # --- PERBAIKAN: INJEKSI DATA DINAMIS ---
+                    self.ibi_buffer.append(float(ibi))
+                    if len(self.ibi_buffer) > 30: # Simpan window 30 detak
+                        self.ibi_buffer.pop(0)
+                    
                     if self.is_calibrating:
-                        # Hitung HR sementara untuk validasi (60000/ibi)
                         temp_hr = 60000.0 / ibi
                         if 40 < temp_hr < 150:
                             self.calibration_ibi_buffer.append(ibi)
-                            print(f"DEBUG: Data HR {temp_hr:.2f} diterima (Buffer: {len(self.calibration_ibi_buffer)})")
-                        else:
-                            # Log jika ada data dibuang
-                            logger.warning(f"Data HR {temp_hr:.2f} dibuang (Outlier).")
-                        print(f"DEBUG: Puncak ditemukan! HR: {self.last_hr:.2f}, Buffer count: {len(self.calibration_ibi_buffer)}")
                 else:
                     self.last_hr = 0.0
             else:
@@ -177,7 +164,17 @@ class AIEngine:
             return 2, magnitude
         
     def calculate_current_rmssd(self):
-        """Menghitung RMSSD dari buffer real-time."""
-        if len(self.ibi_buffer) < 2: return 30.0
+        """Menghitung RMSSD dari buffer yang sudah terupdate real-time."""
+        # Jika data belum cukup, kembalikan nilai 0 atau baseline
+        if len(self.ibi_buffer) < 2: 
+            return 30.0 
+        
+        # Hitung selisih antar detak (RR-Interval/IBI)
         diff_ibi = np.diff(self.ibi_buffer)
-        return float(np.sqrt(np.mean(diff_ibi**2)))
+        
+        # Validasi agar tidak menghitung RMSSD dari data yang sama (jika std=0)
+        if np.std(diff_ibi) == 0:
+            return 30.0
+            
+        rmssd = np.sqrt(np.mean(diff_ibi**2))
+        return float(rmssd)

@@ -92,6 +92,29 @@ class DBManager:
                         app_name VARCHAR(255), start_time DATETIME, duration INT
                     )
                 """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS window_slicing_logs (
+                        id INT AUTO_INCREMENT PRIMARY KEY, 
+                        user_id INT,
+                        start_time DATETIME, 
+                        end_time DATETIME, 
+                        avg_delta_hr FLOAT, 
+                        avg_delta_rmssd FLOAT,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    )
+                """)
+
+                # 3. Tabel untuk Prediction Logs (Hasil Analisis Tren)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS prediction_logs (
+                        id INT AUTO_INCREMENT PRIMARY KEY, 
+                        window_id INT,
+                        prediction_status VARCHAR(50), 
+                        trend_score FLOAT, 
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (window_id) REFERENCES window_slicing_logs(id) ON DELETE CASCADE
+                    )
+                """)
                 conn.commit()
                 logger.info("* Skema tabel database skripsi berhasil diperbarui!")
 

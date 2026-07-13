@@ -1,14 +1,30 @@
-2026-07-13 09:09:40,757 - root - INFO - ====== SISTEM LOGGING DIMULAI ======
-2026-07-13 09:09:40,774 - flet_desktop - INFO - Starting Flet View app...
-2026-07-13 09:09:40,783 - flet_desktop - INFO - Flet client found in cache: C:\Users\acern\.flet\client\flet-desktop-full-0.85.1
-2026-07-13 09:09:41,300 - root - INFO - ====== BOOTING START ======
-2026-07-13 09:09:41,323 - database - INFO - * Database connection test PASSED
-2026-07-13 09:09:41,332 - database - INFO - * Skema tabel database skripsi berhasil diperbarui!
-2026-07-13 09:09:42,083 - root - INFO - ====== BOOTING COMPLETE ======
-2026-07-13 09:10:02,252 - root - INFO - OK Sesi User Terkunci -> User: haqi
-2026-07-13 09:10:02,295 - root - INFO - Menyalakan mesin MQTT otomatis...
-2026-07-13 09:10:02,302 - root - INFO - Menunggu aliran data dari Gelang IoT...
-2026-07-13 09:10:35,353 - root - INFO - Memulai countdown kalibrasi...
-2026-07-13 09:13:36,555 - root - INFO - Waktu kalibrasi habis, memanggil finalize...
-2026-07-13 09:13:36,562 - ai_engine - INFO - Kalibrasi Berhasil! HR_Baseline: 81.0486318464008, RMSSD_Baseline: 57.24099871183431
-2026-07-13 09:13:36,573 - database - INFO - * Calibration result saved for user 2
+2026-07-13 15:04:04,636 - root - INFO - ====== SISTEM LOGGING DIMULAI ======
+2026-07-13 15:04:04,645 - flet_desktop - INFO - Starting Flet View app...
+2026-07-13 15:04:04,650 - flet_desktop - INFO - Flet client found in cache: C:\Users\acern\.flet\client\flet-desktop-full-0.85.1
+2026-07-13 15:04:05,380 - root - INFO - ====== BOOTING START ======
+2026-07-13 15:04:05,387 - database - INFO - * Database connection test PASSED
+2026-07-13 15:04:05,420 - database - INFO - * Skema tabel database skripsi berhasil diperbarui!
+2026-07-13 15:04:07,771 - root - INFO - ====== BOOTING COMPLETE ======
+2026-07-13 15:04:29,377 - root - INFO - OK Sesi User Terkunci -> User: haqi
+2026-07-13 15:04:29,382 - root - INFO - Menyalakan mesin MQTT otomatis...
+2026-07-13 15:04:29,384 - root - INFO - Menunggu aliran data dari Gelang IoT...
+2026-07-13 15:04:30,442 - root - INFO - Memulai countdown kalibrasi...
+2026-07-13 15:07:31,109 - root - INFO - Waktu kalibrasi habis, memanggil finalize...
+2026-07-13 15:07:31,128 - ai_engine - INFO - Kalibrasi Berhasil! HR_Baseline: 89.19293498018216, RMSSD_Baseline: 47.94344618623269
+2026-07-13 15:07:31,131 - database - INFO - * Calibration result saved for user 2
+2026-07-13 15:09:09,043 - ai_engine - INFO - Data Rejected: High Motion Detected (Mag: 7253.40)
+2026-07-13 15:09:09,043 - root - INFO - [REJECTED] Data ignored due to high motion
+2026-07-13 15:09:09,938 - ai_engine - INFO - Data Rejected: High Motion Detected (Mag: 7599.84)
+2026-07-13 15:09:09,939 - root - INFO - [REJECTED] Data ignored due to high motion
+2026-07-13 15:09:09,948 - ai_engine - INFO - Data Rejected: High Motion Detected (Mag: 26076.37)
+2026-07-13 15:09:09,948 - root - INFO - [REJECTED] Data ignored due to high motion
+2026-07-13 15:09:09,960 - ai_engine - INFO - Data Rejected: High Motion Detected (Mag: 8187.52)
+2026-07-13 15:09:09,960 - root - INFO - [REJECTED] Data ignored due to high motion
+2026-07-13 15:09:09,980 - ai_engine - INFO - Data Rejected: High Motion Detected (Mag: 8372.41)
+2026-07-13 15:09:09,980 - root - INFO - [REJECTED] Data ignored due to high motion
+2026-07-13 15:09:31,361 - root - INFO - [DB LOGGED] Status: NORMAL
+2026-07-13 15:10:31,390 - root - INFO - [DB LOGGED] Status: NORMAL
+2026-07-13 15:11:31,482 - root - INFO - [DB LOGGED] Status: NORMAL
+2026-07-13 15:12:31,533 - root - INFO - [DB LOGGED] Status: NORMAL
+2026-07-13 15:13:31,677 - root - INFO - [DB LOGGED] Status: NORMAL
+2026-07-13 15:14:31,722 - root - INFO - [DB LOGGED] Status: NORMAL
