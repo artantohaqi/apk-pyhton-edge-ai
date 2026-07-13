@@ -1,4 +1,5 @@
 from collections import deque
+import pandas as pd
 
 import flet as ft
 import threading
@@ -251,9 +252,8 @@ class FatigueApp:
         # 1. Hitung magnitudo akselerasi (Vector Sum)
         acc_magnitude = (ax**2 + ay**2 + az**2)**0.5
 
-        # Threshold gerakan (Sesuaikan nilainya sesuai sensitivitas sensor MPU6050)
-        # Jika acc_magnitude terlalu tinggi, berarti user bergerak -> data kotor
-        MOVEMENT_THRESHOLD = 22000
+        # Threshold gerakan
+        MOVEMENT_THRESHOLD = 16000
 
         if acc_magnitude > MOVEMENT_THRESHOLD:
             # Data kotor, abaikan sample ini agar baseline tidak terkontaminasi
@@ -273,7 +273,6 @@ class FatigueApp:
 
 
     def finalize_calibration(self):
-
         # Kita cetak siapa yang memanggil fungsi ini
         print("--- [DEBUG] finalize_calibration dipanggil oleh: ---")
         traceback.print_stack() 
@@ -341,41 +340,87 @@ class FatigueApp:
             logging.error(f"Error update_ai_prediction: {e}", exc_info=True)
 
     def process_60s_window(self):
+        # FIX: Tambahkan pengecekan ini
+        if not self.is_calibrated: 
+            # Jika belum kalibrasi, jangan proses dan jangan masukkan ke history
+            self.current_window_features = [] 
+            return
+
         if not self.current_window_features: return
 
+        # Agregasi Fitur
         avg_delta_hr = np.mean([d['delta_hr'] for d in self.current_window_features])
         avg_delta_rmssd = np.mean([d['delta_rmssd'] for d in self.current_window_features])
+        avg_mean_acc = np.mean([d.get('mean_acc', 0) for d in self.current_window_features])
         
-        # Simpan ke tabel window_slicing_logs
-        window_id = self.db.insert_window_log(self.active_user['id'], avg_delta_hr, avg_delta_rmssd)
+        # Simpan ke tabel log (Sekarang hanya jalan setelah kalibrasi)
+        window_id = self.db.insert_window_log(
+            self.active_user['id'], 
+            float(avg_delta_hr), 
+            float(avg_delta_rmssd)
+        )
         
+        # Simpan ke window_history
         snapshot = {
-            "id": window_id, # Simpan ID agar bisa di-link
+            "id": window_id,
             "delta_hr": avg_delta_hr,
-            "delta_rmssd": avg_delta_rmssd
+            "delta_rmssd": avg_delta_rmssd,
+            "mean_acc": avg_mean_acc
         }
         self.window_history.append(snapshot)
-        self.current_window_features = []
+        self.current_window_features = [] 
         
+        # Jalankan inferensi hanya jika sudah terkumpul 3 window (3 menit)
         if len(self.window_history) == 3:
-            self.analyze_fatigue_trend()
+            self.run_ml_inference()
 
-    def analyze_fatigue_trend(self):
+    def run_ml_inference(self):
         w1, w2, w3 = self.window_history[0], self.window_history[1], self.window_history[2]
         
-        # Logika Trend
-        hr_naik = (w3['delta_hr'] > w2['delta_hr'] > w1['delta_hr'])
-        rmssd_turun = (w3['delta_rmssd'] < w2['delta_rmssd'] < w1['delta_rmssd'])
+        # 1. Hitung Trend Score
+        delta_hr_total = w3['delta_hr'] - w1['delta_hr']
+        delta_rmssd_total = w3['delta_rmssd'] - w1['delta_rmssd']
+        trend_score = abs(delta_hr_total) + abs(delta_rmssd_total)
+
+        # 2. Siapkan data fitur
+        feature_data = [[
+            w3['delta_hr'], w3['delta_rmssd'], w3['mean_acc'], 
+            w2['delta_hr'], w2['delta_rmssd'], 
+            w1['delta_hr'], w1['delta_rmssd'], 
+            float(self.active_user['age']), 
+            float(self.active_user['tb']), 
+            float(self.active_user['bb']), 
+            1 if self.active_user['kelamin_id'] == 1 else 0
+        ]]
         
-        # Skor sederhana (bisa kamu modifikasi untuk skripsi)
-        trend_score = float(w3['delta_hr'] - w1['delta_hr']) 
+        feature_names = [
+            "delta_hr", "delta_rmssd", "mean_acc", "lag1_hr", "lag1_rmssd", 
+            "lag2_hr", "lag2_rmssd", "Age", "Height (cm)", "Weight (kg)", "Gender_m"
+        ]
         
-        self.status = "DIGITAL FATIGUE" if (hr_naik and rmssd_turun) else "NORMAL"
+        df_features = pd.DataFrame(feature_data, columns=feature_names)
         
-        # Simpan hasil prediksi ke tabel prediction_logs
-        self.db.insert_prediction_log(w3['id'], self.status, trend_score)
+        # 3. Prediksi dengan PROBABILITAS
+        scaled_features = self.ai.scaler.transform(df_features)
         
-        logging.info(f"[DB LOGGED] Status: {self.status}")
+        # predict_proba mengembalikan array [[prob_normal, prob_fatigue]]
+        probabilities = self.ai.model.predict_proba(scaled_features)[0]
+        fatigue_prob = probabilities[1] # Ambil probabilitas kelas 1 (Fatigue)
+        
+        # 4. TUNING THRESHOLD (Kunci mengatasi False Negative)
+        # Jika probabilitas > 0.3 (30%), sistem sudah berani menyatakan "DIGITAL FATIGUE"
+        if fatigue_prob > 0.3:
+            self.status = "DIGITAL FATIGUE"
+        else:
+            self.status = "NORMAL"
+        
+        # 5. Simpan hasil
+        self.db.insert_prediction_log(w3['id'], self.status, float(trend_score))
+        
+        # Log probabilitas agar kamu bisa lihat di app_debug.log
+        logging.info(f"[ML INFERENCE] Status: {self.status} | Fatigue Prob: {fatigue_prob:.2f} | Trend Score: {trend_score:.2f}")
+        
+        self._update_health_ui(hr_val=int(self.ai.last_hr))
 
     def start_mqtt_public(self):
         try:
