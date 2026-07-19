@@ -55,7 +55,7 @@ class FatigueApp:
         logging.info("====== BOOTING START ======")
         self.page = page
         self.db = DBManager()
-        self.ai = AIEngine("model_xgboost_fatigue.pkl", "scaler_fatigue.pkl")
+        self.ai = AIEngine("model_svm_fatigue.pkl", "scaler_fatigue.pkl")
 
         self.current_web_level = "Level 1"
         self.web_seconds = 0
@@ -87,7 +87,7 @@ class FatigueApp:
         self.is_task_active = False
 
         self.prediction_buffer = [] # Penampung 10 prediksi terakhir
-        self.window_history = deque(maxlen=3) 
+        self.window_history = deque(maxlen=5) 
         self.current_window_features = [] # Penampung data per 60 detik
         self.last_window_time = time.time()
         self.WINDOW_SIZE = 10
@@ -196,6 +196,10 @@ class FatigueApp:
                 # 3. PROSES DSP (Menghitung HR, IBI, Acc)
                 hr, ibi, acc = self.ai.process_raw_signals(ppg_ir, ax, ay, az)
 
+                # --- TAMBAHKAN DEBUG LOG INI ---
+                if self.ai.sample_counter % 60 == 0: # Cek setiap 1 detik
+                    logging.info(f"DEBUG - HR: {hr:.1f} BPM | IBI: {ibi:.1f} ms | Buffer_Size: {len(self.ai.ibi_buffer)}")
+                    
                 # 4. DISPATCHER
                 if self.is_calibrating:
                     if 40 < hr < 180:
@@ -206,7 +210,7 @@ class FatigueApp:
                     self.update_ai_prediction()
 
         except Exception as e: 
-            print(f"Error pada on_local_message: {e}")
+            logging.error(f"Error pada on_local_message: {e}")
 
     def start_calibration_timer(self):
         logging.info("Memulai countdown kalibrasi...")
@@ -274,9 +278,9 @@ class FatigueApp:
 
     def finalize_calibration(self):
         # Kita cetak siapa yang memanggil fungsi ini
-        print("--- [DEBUG] finalize_calibration dipanggil oleh: ---")
+        logging.info("--- [DEBUG] finalize_calibration dipanggil oleh: ---")
         traceback.print_stack() 
-        print("------------------------------------------------------")
+        logging.info("------------------------------------------------------")
         
         # Jangan biarkan lanjut jika waktu belum habis (di bawah 175 detik sebagai toleransi)
         if self.calibration_seconds > 5: 
@@ -289,11 +293,12 @@ class FatigueApp:
             success = self.db.save_calibration_result(
                 user_id=self.active_user['id'], 
                 hr_baseline=float(self.ai.hr_baseline),
-                rmssd_baseline=float(self.ai.rmssd_baseline)
+                rmssd_baseline=float(self.ai.rmssd_baseline),
+                feature_baseline=self.ai.feature_baseline
             )
             
             if success:
-                print("DEBUG: Final Baseline tersimpan ke database!")
+                logging.info("DEBUG: Final Baseline tersimpan ke database!")
             
             # 3. Ubah Status
             self.is_calibrating = False
@@ -316,7 +321,7 @@ class FatigueApp:
             )
 
             if processed_data:
-                # 1. Simpan ke database setiap detak (untuk log detail)
+                # 1. Simpan ke database (log per detak)
                 self.db.add_health_metrics(
                     user_id=self.active_user['id'],
                     hr=float(self.ai.last_hr),
@@ -326,102 +331,93 @@ class FatigueApp:
                     motion_level=processed_data['motion_level']
                 )
 
-                # 2. Akumulasi ke buffer window
+                # 2. Akumulasi ke buffer window untuk Trend Analysis
                 self.current_window_features.append(processed_data)
 
-                # 3. Cek apakah sudah 60 detik?
+                # 3. Cek window 60 detik (untuk Trend/Heuristik)
                 if time.time() - self.last_window_time >= 60:
                     self.process_60s_window()
                     self.last_window_time = time.time()
             else:
-                logging.info("[REJECTED] Data ignored due to high motion")
+                logging.info("[REJECTED] Data ignored (Motion)")
 
         except Exception as e:
             logging.error(f"Error update_ai_prediction: {e}", exc_info=True)
 
     def process_60s_window(self):
-        # FIX: Tambahkan pengecekan ini
-        if not self.is_calibrated: 
-            # Jika belum kalibrasi, jangan proses dan jangan masukkan ke history
+        if not self.is_calibrated or not self.current_window_features: 
             self.current_window_features = [] 
             return
 
-        if not self.current_window_features: return
-
-        # Agregasi Fitur
+        # Agregasi Fitur per 60 detik
         avg_delta_hr = np.mean([d['delta_hr'] for d in self.current_window_features])
         avg_delta_rmssd = np.mean([d['delta_rmssd'] for d in self.current_window_features])
-        avg_mean_acc = np.mean([d.get('mean_acc', 0) for d in self.current_window_features])
         
-        # Simpan ke tabel log (Sekarang hanya jalan setelah kalibrasi)
         window_id = self.db.insert_window_log(
-            self.active_user['id'], 
-            float(avg_delta_hr), 
-            float(avg_delta_rmssd)
+            self.active_user['id'], float(avg_delta_hr), float(avg_delta_rmssd)
         )
         
-        # Simpan ke window_history
-        snapshot = {
-            "id": window_id,
-            "delta_hr": avg_delta_hr,
-            "delta_rmssd": avg_delta_rmssd,
-            "mean_acc": avg_mean_acc
-        }
-        self.window_history.append(snapshot)
+        # HITUNG ML FEATURES
+        ml_feats = self.ai.calculate_4_features(np.array(self.ai.ibi_buffer))
+        
+        # PENTING: Hanya simpan ke history jika fitur berhasil dihitung (bukan None)
+        if ml_feats is not None:
+            self.window_history.append({
+                "id": window_id,
+                "delta_hr": avg_delta_hr,
+                "delta_rmssd": avg_delta_rmssd,
+                "ml_features": ml_feats
+            })
+        else:
+            logging.info("Data belum cukup untuk ekstraksi fitur ML, menunggu window berikutnya...")
+            
         self.current_window_features = [] 
         
-        # Jalankan inferensi hanya jika sudah terkumpul 3 window (3 menit)
-        if len(self.window_history) == 3:
+        # Inferensi hanya jika data di history sudah lengkap (minimal 3 atau 5)
+        if len(self.window_history) >= 5:
             self.run_ml_inference()
 
     def run_ml_inference(self):
-        w1, w2, w3 = self.window_history[0], self.window_history[1], self.window_history[2]
-        
-        # 1. Hitung Trend Score
-        delta_hr_total = w3['delta_hr'] - w1['delta_hr']
-        delta_rmssd_total = w3['delta_rmssd'] - w1['delta_rmssd']
-        trend_score = abs(delta_hr_total) + abs(delta_rmssd_total)
+        # 1. Validasi Buffer & Baseline Fitur
+        # Pastikan data cukup dan kalibrasi sudah selesai
+        if len(self.ai.ibi_buffer) < 300 or self.ai.feature_baseline is None: 
+            return
 
-        # 2. Siapkan data fitur
-        feature_data = [[
-            w3['delta_hr'], w3['delta_rmssd'], w3['mean_acc'], 
-            w2['delta_hr'], w2['delta_rmssd'], 
-            w1['delta_hr'], w1['delta_rmssd'], 
-            float(self.active_user['age']), 
-            float(self.active_user['tb']), 
-            float(self.active_user['bb']), 
-            1 if self.active_user['kelamin_id'] == 1 else 0
-        ]]
+        # 2. Ekstraksi Fitur Mentah
+        ml_features = self.ai.calculate_4_features(np.array(self.ai.ibi_buffer))
+        if ml_features is None: return
+
+        # 3. HITUNG DELTA SECARA REALTIME
+        # Mengurangi fitur real-time dengan baseline hasil kalibrasi
+        ml_delta = [ml_features[i] - self.ai.feature_baseline[i] for i in range(4)]
         
-        feature_names = [
-            "delta_hr", "delta_rmssd", "mean_acc", "lag1_hr", "lag1_rmssd", 
-            "lag2_hr", "lag2_rmssd", "Age", "Height (cm)", "Weight (kg)", "Gender_m"
-        ]
+        # 4. Scaling (Menggunakan scaler yang dilatih pada dataset Delta)
+        feature_names = ['S1_DFA2', 'S1_ApEn', 'S1_VLFpow_FFT_log', 'S1_LF_HF_ratio_FFT']
+        df_delta = pd.DataFrame([ml_delta], columns=feature_names)
+        scaled_features = self.ai.scaler.transform(df_delta)
         
-        df_features = pd.DataFrame(feature_data, columns=feature_names)
+        # 5. Prediksi Biner Murni (Hasil SVM: 0 atau 1)
+        prediction = int(self.ai.model.predict(scaled_features)[0])
         
-        # 3. Prediksi dengan PROBABILITAS
-        scaled_features = self.ai.scaler.transform(df_features)
+        # 6. DEBOUNCING (Voting System)
+        if not hasattr(self, 'pred_buffer'): self.pred_buffer = []
         
-        # predict_proba mengembalikan array [[prob_normal, prob_fatigue]]
-        probabilities = self.ai.model.predict_proba(scaled_features)[0]
-        fatigue_prob = probabilities[1] # Ambil probabilitas kelas 1 (Fatigue)
+        self.pred_buffer.append(prediction)
+        if len(self.pred_buffer) > 3: self.pred_buffer.pop(0)
         
-        # 4. TUNING THRESHOLD (Kunci mengatasi False Negative)
-        # Jika probabilitas > 0.3 (30%), sistem sudah berani menyatakan "DIGITAL FATIGUE"
-        if fatigue_prob > 0.3:
+        # Keputusan: Fatigue jika 3 kali berturut-turut hasil prediksi adalah 1
+        if sum(self.pred_buffer) == 3:
             self.status = "DIGITAL FATIGUE"
         else:
             self.status = "NORMAL"
+            
+        # 7. Logging (Tanpa Probabilitas)
+        # Catatan: Sesuaikan fungsi insert_prediction_log jika parameter probabilitas wajib ada di DB
+        self.db.insert_prediction_log(self.window_history[-1]['id'], self.status, 0.0)
         
-        # 5. Simpan hasil
-        self.db.insert_prediction_log(w3['id'], self.status, float(trend_score))
-        
-        # Log probabilitas agar kamu bisa lihat di app_debug.log
-        logging.info(f"[ML INFERENCE] Status: {self.status} | Fatigue Prob: {fatigue_prob:.2f} | Trend Score: {trend_score:.2f}")
-        
+        logging.info(f"[PURE ML] Prediksi: {self.status} | Buffer: {self.pred_buffer}")
         self._update_health_ui(hr_val=int(self.ai.last_hr))
-
+        
     def start_mqtt_public(self):
         try:
             client_id = f"PUB_LARAVEL_{int(time.time())}"

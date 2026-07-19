@@ -7,6 +7,9 @@ import joblib
 import os
 import time
 from scipy.signal import find_peaks
+import scipy.stats as stats
+from scipy.signal import welch
+import nolds
 
 class AIEngine:
     def __init__(self, model_name, scaler_name):
@@ -15,6 +18,8 @@ class AIEngine:
         scaler_path = os.path.join(base_path, "models", scaler_name)
         self.sample_counter = 0
         self.sample_index_buffer = []
+
+        self.feature_baseline = None
         
         try:
             self.model = joblib.load(model_path)
@@ -43,30 +48,20 @@ class AIEngine:
         logger.info("Sesi Kalibrasi dimulai (3 menit).")
 
     def calculate_baseline(self):
-        """Mengolah data IBI yang dikumpulkan menjadi nilai Baseline tetap."""
-
-        # TAMBAHKAN DEBUG INI:
-        print(f"DEBUG: Isi buffer kalibrasi saat ini: {len(self.calibration_ibi_buffer)} sampel")
-
-        # 1. Validasi: Pastikan data cukup (misalnya minimal 50 detak)
         if len(self.calibration_ibi_buffer) < 50:
-            logger.warning("Data kalibrasi tidak cukup!")
             return False
 
-        # 2. Convert buffer ke numpy array untuk perhitungan cepat
+        # 1. Hitung baseline HR & RMSSD (seperti biasa)
         ibi_array = np.array(self.calibration_ibi_buffer)
-
-        # 3. Hitung HR Baseline (Mean HR)
-        # Rata-rata IBI = Mean(ibi_array)
-        # HR = 60000 / Mean(IBI)
         mean_ibi = np.mean(ibi_array)
         self.hr_baseline = 60000.0 / mean_ibi
+        self.rmssd_baseline = float(np.sqrt(np.mean(np.diff(ibi_array)**2)))
 
-        # 4. Hitung RMSSD Baseline. RMSSD = akar kuadrat dari mean(selisih kuadrat IBI yang berurutan)
-        diff_ibi = np.diff(ibi_array)
-        self.rmssd_baseline = float(np.sqrt(np.mean(diff_ibi**2)))
-
-        logger.info(f"Kalibrasi Berhasil! HR_Baseline: {self.hr_baseline}, RMSSD_Baseline: {self.rmssd_baseline}")
+        # 2. HITUNG BASELINE 4 FITUR ML
+        # Kita hitung fitur dari seluruh data kalibrasi yang terkumpul
+        self.feature_baseline = self.calculate_4_features(ibi_array)
+        
+        logger.info(f"Kalibrasi Berhasil! Baseline Fitur: {self.feature_baseline}")
         return True
 
     def process_raw_signals(self, ppg_ir, ax, ay, az):
@@ -96,7 +91,7 @@ class AIEngine:
                     
                     # --- PERBAIKAN: INJEKSI DATA DINAMIS ---
                     self.ibi_buffer.append(float(ibi))
-                    if len(self.ibi_buffer) > 30: # Simpan window 30 detak
+                    if len(self.ibi_buffer) > 600: # Simpan window 30 detak
                         self.ibi_buffer.pop(0)
                     
                     if self.is_calibrating:
@@ -110,36 +105,79 @@ class AIEngine:
 
         return float(self.last_hr), float(self.last_ibi), float(np.sqrt(ax**2 + ay**2 + az**2))
 
+    def calculate_4_features(self, ibi_data):
+        """
+        Murni untuk ekstraksi fitur. 
+        Input: array IBI (RR-Interval)
+        Output: [DFA2, ApEn, VLF, LF/HF]
+        """
+        if len(ibi_data) < 60:  # Minimal 60 poin data agar aman untuk DFA
+            return None
+        
+        # 1. FFT dengan Welch Method
+        freqs, psd = welch(ibi_data, fs=1, nperseg=len(ibi_data))
+        
+        # 2. Hitung Power
+        vlf_pow = np.sum(psd[(freqs >= 0.003) & (freqs <= 0.04)])
+        lf_pow = np.sum(psd[(freqs >= 0.04) & (freqs <= 0.15)])
+        hf_pow = np.sum(psd[(freqs >= 0.15) & (freqs <= 0.4)])
+        
+        vlf_log = np.log(vlf_pow + 1e-6)
+        lf_hf = (lf_pow / hf_pow) if hf_pow > 0 else 0
+        
+        # 3. ApEn
+        def apen(u, m=2, r=0.2):
+            def _phi(m):
+                x = np.array([u[i:i+m] for i in range(len(u) - m + 1)])
+                C = np.sum(np.max(np.abs(x[:, np.newaxis] - x), axis=2) <= r*np.std(u), axis=0) / len(u)
+                return np.sum(np.log(C + 1e-6)) / len(u)
+            return _phi(m) - _phi(m+1)
+
+        apen_val = apen(ibi_data)
+        
+        # 4. DFA2
+        import nolds
+        try:
+            dfa2_val = nolds.dfa(ibi_data, nvals=range(12, min(50, len(ibi_data) // 2)))
+        except:
+            dfa2_val = 0.0 # Nilai cadangan jika gagal
+        
+        # Hanya mengembalikan list angka
+        return [float(dfa2_val), float(apen_val), float(vlf_log), float(lf_hf)]
+
     def extract_features(self, current_hr, current_rmssd, ax, ay, az):
         try:
-            if self.hr_baseline is None or self.rmssd_baseline is None:
+            # Pastikan baseline sudah ada (HR, RMSSD, dan 4 Fitur ML)
+            if self.hr_baseline is None or self.rmssd_baseline is None or self.feature_baseline is None:
                 return None
 
-            # 1. Gating/Filtering berdasarkan Motion
             motion_level, magnitude = self.get_motion_level(ax, ay, az)
-            
             if motion_level == 2:
-                logger.info(f"Data Rejected: High Motion Detected (Mag: {magnitude:.2f})")
-                return None # Mengembalikan None jika data terlalu berisik
+                logger.info(f"Data Rejected: High Motion (Mag: {magnitude:.2f})")
+                return None 
 
-            # 2. RUMUS DELTA
+            # 1. Delta HR & RMSSD (Safety Override)
             delta_hr = current_hr - self.hr_baseline
             delta_rmssd = current_rmssd - self.rmssd_baseline
             
-            # 3. Persiapkan fitur (hanya delta_hr, delta_rmssd, motion_level)
-            features_data = np.array([[float(delta_hr), float(delta_rmssd), float(motion_level)]])
+            # 2. Delta ML Features
+            ml_features = self.calculate_4_features(np.array(self.ibi_buffer))
+            if ml_features is None: return None
             
-            # Kembalikan data yang sudah di-gating untuk dikirim ke sistem/database
+            # RUMUS DELTA: Realtime - Baseline
+            ml_delta = [ml_features[i] - self.feature_baseline[i] for i in range(4)]
+            
             return {
                 "delta_hr": float(delta_hr),
                 "delta_rmssd": float(delta_rmssd),
-                "motion_level": motion_level
+                "motion_level": motion_level,
+                "ml_delta": ml_delta # Mengirim data yang sudah di-Delta
             }
             
         except Exception as e:
             logger.error(f"AI_ERROR: {e}")
             return None
-
+        
     def get_motion_level(self, ax, ay, az):
         """
         Menentukan level gerakan berdasarkan magnitude akselerometer.
@@ -153,28 +191,20 @@ class AIEngine:
         deviation = abs(magnitude - 16384)
         
         # Threshold:
-        # 0-3000: Diam/Sangat tenang (Data bersih)
-        # 3000-8000: Gerakan ringan (Acceptable)
-        # >8000: Gerakan tinggi (Reject)
-        if deviation < 3000:
+        # 0-1000: Diam/Sangat tenang (Data bersih)
+        # 1000-4000: Gerakan ringan (Acceptable)
+        # >4000: Gerakan tinggi (Reject)
+        if deviation < 1000:
             return 0, magnitude
-        elif deviation < 8000:
+        elif deviation < 4000:
             return 1, magnitude
         else:
             return 2, magnitude
         
+    # --- UTILITY ---
     def calculate_current_rmssd(self):
-        """Menghitung RMSSD dari buffer yang sudah terupdate real-time."""
-        # Jika data belum cukup, kembalikan nilai 0 atau baseline
-        if len(self.ibi_buffer) < 2: 
-            return 30.0 
-        
-        # Hitung selisih antar detak (RR-Interval/IBI)
+        # Tetap simpan untuk kalkulasi safety metrics di atas
+        if len(self.ibi_buffer) < 2: return 30.0 
         diff_ibi = np.diff(self.ibi_buffer)
-        
-        # Validasi agar tidak menghitung RMSSD dari data yang sama (jika std=0)
-        if np.std(diff_ibi) == 0:
-            return 30.0
-            
-        rmssd = np.sqrt(np.mean(diff_ibi**2))
-        return float(rmssd)
+        if np.std(diff_ibi) == 0: return 30.0
+        return float(np.sqrt(np.mean(diff_ibi**2)))

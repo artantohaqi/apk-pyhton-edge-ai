@@ -73,11 +73,7 @@ class DBManager:
                 """)
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS calibration_results (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
-                        user_id INT,
-                        hr_baseline FLOAT,
-                        rmssd_baseline FLOAT,
-                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                        id INT AUTO_INCREMENT PRIMARY KEY, user_id INT, hr_baseline FLOAT,rmssd_baseline FLOAT, dfa2_baseline FLOAT, apen_baseline FLOAT, vlf_baseline FLOAT,lfhf_baseline FLOAT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 cursor.execute("""
@@ -181,20 +177,24 @@ class DBManager:
             if cursor: cursor.close()
             if conn: conn.close()
 
-    def save_calibration_result(self, user_id, hr_baseline, rmssd_baseline):
-        conn = None
-        cursor = None
+    def save_calibration_result(self, user_id, hr_baseline, rmssd_baseline, feature_baseline):
+        # feature_baseline adalah list: [dfa2, apen, vlf, lfhf]
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-            query = """INSERT INTO calibration_results (user_id, hr_baseline, rmssd_baseline) 
-                       VALUES (%s, %s, %s)"""
-            cursor.execute(query, (user_id, float(hr_baseline), float(rmssd_baseline)))
+            query = """INSERT INTO calibration_results 
+                    (user_id, hr_baseline, rmssd_baseline, dfa2_baseline, apen_baseline, vlf_baseline, lfhf_baseline) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)"""
+            
+            cursor.execute(query, (
+                user_id, float(hr_baseline), float(rmssd_baseline), 
+                float(feature_baseline[0]), float(feature_baseline[1]), 
+                float(feature_baseline[2]), float(feature_baseline[3])
+            ))
             conn.commit()
-            logger.info(f"* Calibration result saved for user {user_id}")
             return True
         except Exception as e:
-            logger.error(f" Error saving calibration: {e}")
+            logger.error(f"Error saving calibration: {e}")
             return False
         finally:
             if cursor: cursor.close()
