@@ -1,0 +1,10 @@
+2026-07-22 01:29:12,616 - root - INFO - ====== SISTEM LOGGING DIMULAI ======
+2026-07-22 01:29:12,628 - flet_desktop - INFO - Starting Flet View app...
+2026-07-22 01:29:12,633 - flet_desktop - INFO - Flet client found in cache: C:\Users\acern\.flet\client\flet-desktop-full-0.85.1
+2026-07-22 01:29:12,978 - root - INFO - ====== BOOTING START ======
+2026-07-22 01:29:12,986 - database - INFO - * Database connection test PASSED
+2026-07-22 01:29:12,989 - database - INFO - * Skema tabel database skripsi berhasil diperbarui!
+2026-07-22 01:29:13,155 - root - INFO - ====== BOOTING COMPLETE ======
+2026-07-22 01:29:17,962 - root - INFO - OK Sesi User Terkunci -> User: admin
+2026-07-22 01:29:17,970 - root - INFO - Menyalakan mesin MQTT otomatis...
+2026-07-22 01:29:17,972 - root - INFO - Menunggu aliran data dari Gelang IoT...
