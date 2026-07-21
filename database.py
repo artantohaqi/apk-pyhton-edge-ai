@@ -15,7 +15,11 @@ class DBManager:
         }
         self.lock = threading.Lock()
         self.is_connected = False
+<<<<<<< HEAD
 
+=======
+        
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
         try:
             conn = self.get_connection()
             conn.close()
@@ -56,7 +60,11 @@ class DBManager:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+<<<<<<< HEAD
 
+=======
+                
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
                 # 2. Tabel Pendukung Sensor IoT
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS raw_sensor_logs (
@@ -111,6 +119,7 @@ class DBManager:
                         FOREIGN KEY (window_id) REFERENCES window_slicing_logs(id) ON DELETE CASCADE
                     )
                 """)
+<<<<<<< HEAD
 
                 # ==========================================================
                 # FIX BARU: Tabel untuk data Custom Box (suhu/cahaya/kebisingan)
@@ -129,6 +138,8 @@ class DBManager:
                     )
                 """)
 
+=======
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
                 conn.commit()
                 logger.info("* Skema tabel database skripsi berhasil diperbarui!")
 
@@ -136,7 +147,11 @@ class DBManager:
             with self.lock:
                 cursor.execute("SELECT id FROM users WHERE username = 'admin'")
                 admin_exist = cursor.fetchone()
+<<<<<<< HEAD
 
+=======
+                
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
                 if not admin_exist:
                     logger.info("⚠️ Akun Admin belum terdeteksi. Melakukan auto-seeding...")
                     query_admin = """
@@ -169,6 +184,10 @@ class DBManager:
             cursor.execute(query, (user_id, ppg_ir, ppg_red, float(ax), float(ay), float(az), float(gx), float(gy), float(gz)))
             conn.commit()
             return True
+<<<<<<< HEAD
+=======
+            logger.info("Database berhasil terhubung!")
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
         except Exception as e:
             logger.error(" Error insert raw log: %s", str(e))
             return False
@@ -220,11 +239,21 @@ class DBManager:
     # ========================================================
     # FIX FATAL 2: FUNGSI KEMBAR DIHAPUS, SISA 1 YANG BENAR
     # ========================================================
+<<<<<<< HEAD
     def add_health_metrics(self, user_id, hr, rmssd, delta_hr, delta_rmssd, motion_level):
         query = """INSERT INTO health_metrics_logs 
                 (user_id, hr, rmssd, delta_hr, delta_rmssd, motion_level, timestamp) 
                 VALUES (%s, %s, %s, %s, %s, %s, NOW())"""
 
+=======
+    # Di dalam database.py
+    def add_health_metrics(self, user_id, hr, rmssd, delta_hr, delta_rmssd, motion_level):
+        # Sesuaikan dengan nama kolom di tabel health_metrics_logs kamu
+        query = """INSERT INTO health_metrics_logs 
+                (user_id, hr, rmssd, delta_hr, delta_rmssd, motion_level, timestamp) 
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())"""
+        
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
         conn = None
         try:
             conn = self.get_connection()
@@ -240,11 +269,15 @@ class DBManager:
                 conn.close()
 
     # ========================================================
+<<<<<<< HEAD
     # FIX FATAL 3: PENYESUAIAN NAMA KOLOM
     # Sebelumnya query minta kolom recorded_at, ibi, acc, status_ai
     # padahal tabel health_metrics_logs isinya timestamp, hr, rmssd,
     # delta_hr, delta_rmssd, motion_level -> query lama pasti error
     # "Unknown column" kalau method ini dipanggil.
+=======
+    # FIX FATAL 3: PENYESUAIAN NAMA KOLOM (recorded_at & status_ai)
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
     # ========================================================
     def get_all_health_logs(self, user_id):
         if not self.is_connected or user_id is None: return []
@@ -253,9 +286,14 @@ class DBManager:
         try:
             conn = self.get_connection()
             cursor = conn.cursor(dictionary=True)
+<<<<<<< HEAD
             query = """SELECT timestamp, hr, rmssd, delta_hr, delta_rmssd, motion_level 
                        FROM health_metrics_logs WHERE user_id = %s 
                        ORDER BY timestamp DESC LIMIT 50"""
+=======
+            # Ubah timestamp jadi recorded_at, status jadi status_ai
+            query = "SELECT recorded_at, hr, ibi, acc, status_ai FROM health_metrics_logs WHERE user_id = %s ORDER BY recorded_at DESC LIMIT 50"
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
             cursor.execute(query, (user_id,))
             return cursor.fetchall()
         except Exception as e:
@@ -361,6 +399,7 @@ class DBManager:
             if cursor: cursor.close()
             if conn: conn.close()
 
+<<<<<<< HEAD
     # ========================================================
     # BARU: simpan data Custom Box (suhu/cahaya/kebisingan)
     # Dipanggil dari main.py -> handle_environment_data()
@@ -414,6 +453,9 @@ class DBManager:
     # bakal error "Table 'skripsi.performa_logs' doesn't exist".
     # Method ini sepertinya belum dipanggil di main.py saat ini (aman),
     # tapi kalau mau diaktifkan, buat dulu tabel performa_logs-nya.
+=======
+    # Tambahkan metode ini di dalam class DBManager di database.py
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
     def get_performance_health_report(self, user_id):
         logger.info(f"[TRACE] Database Access: Fetching join data from health_metrics_logs & performa_logs for UserID: {user_id}")
         conn = None
@@ -447,7 +489,11 @@ class DBManager:
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute(query, (user_id, avg_hr, avg_rmssd))
+<<<<<<< HEAD
             window_id = cursor.lastrowid  # Ambil ID terakhir untuk link ke prediction_logs
+=======
+            window_id = cursor.lastrowid # Ambil ID terakhir untuk link ke prediction_logs
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
             conn.commit()
             cursor.close()
             conn.close()
@@ -461,6 +507,7 @@ class DBManager:
             cursor.execute(query, (window_id, status, trend_score))
             conn.commit()
             cursor.close()
+<<<<<<< HEAD
             conn.close()
 
 # =======================
@@ -506,3 +553,6 @@ class DBManager:
                 cursor.close()
                 connection.close()
                 return result
+=======
+            conn.close()
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3

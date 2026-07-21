@@ -19,15 +19,26 @@ class AIEngine:
         self.sample_counter = 0
         self.sample_index_buffer = []
 
+<<<<<<< HEAD
+=======
+        self.feature_baseline = None
+        
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
         try:
             self.model = joblib.load(model_path)
             self.scaler = joblib.load(scaler_path)
             self.status_msg = "AI Engine: Active"
         except Exception as e:
             self.status_msg = f"AI Error: {str(e)}"
+<<<<<<< HEAD
 
         # --- BUFFER REAL-TIME (Untuk Smoothing/DSP) ---
         self.ibi_buffer = []
+=======
+            
+        # --- BUFFER REAL-TIME (Untuk Smoothing/DSP) ---
+        self.ibi_buffer = []  
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
         self.ir_buffer = []
         self.time_buffer = []
         self.last_hr = 75.0
@@ -35,7 +46,11 @@ class AIEngine:
 
         # --- BUFFER & VARIABEL BASELINE (KALIBRASI 3 MENIT) ---
         self.is_calibrating = False
+<<<<<<< HEAD
         self.calibration_ibi_buffer = []
+=======
+        self.calibration_ibi_buffer = [] 
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
         self.hr_baseline = None
         self.rmssd_baseline = None
 
@@ -142,6 +157,7 @@ class AIEngine:
         
         # Hanya mengembalikan list angka
         return [float(dfa2_val), float(apen_val), float(vlf_log), float(lf_hf)]
+<<<<<<< HEAD
     
     # ==========================================================
     # BARU: process_batch()
@@ -175,6 +191,8 @@ class AIEngine:
         current_rmssd = self.calculate_current_rmssd()
 
         return self.extract_features(current_hr, current_rmssd, last_ax, last_ay, last_az)
+=======
+>>>>>>> 98367951641cbdfd2bce23d201baa6fa15f166a3
 
     def extract_features(self, current_hr, current_rmssd, ax, ay, az):
         try:
